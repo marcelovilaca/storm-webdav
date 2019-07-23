@@ -1,0 +1,89 @@
+#!/usr/bin/env groovy
+
+@Library('sd')_
+def kubeLabel = getKubeLabel()
+
+pipeline {
+  agent {
+    kubernetes {
+      label "${kubeLabel}"
+      cloud 'Kube mwdevel'
+      defaultContainer 'runner'
+      inheritFrom 'ci-template'
+      containerTemplate {
+        name 'runner'
+        image 'italiangrid/storm-testsuite:centos7'
+        ttyEnabled true
+        command 'cat'
+        alwaysPullImage true
+      }
+    }
+  }
+
+  options {
+    timeout(time: 1, unit: 'HOURS')
+    buildDiscarder(logRotator(numToKeepStr: '5'))
+  }
+
+  environment { 
+    DOCKER_REGISTRY_HOST = "${env.DOCKER_REGISTRY_HOST}"
+  }
+
+  parameters {
+    string(defaultValue: "localhost", description: '', name: 'DAV_HOST')
+    string(defaultValue: "omii006-vm03.cnaf.infn.it", description: '', name: 'REMOTE_DAV_HOST')
+    string(defaultValue: "", description: '', name: 'ROBOT_ARGS')
+  }
+
+  stages {
+    stage ('checkout') {
+      steps {
+        checkout scm
+      }
+    }
+    stage ('run') {
+      environment {
+        DAV_HOST = "${params.DAV_HOST}"
+        REMOTE_DAV_HOST = "${params.REMOTE_DAV_HOST}"
+        ROBOT_ARGS = "${params.ROBOT_ARGS}"
+      }
+      steps {
+        dir('storm-webdav') {
+          dir('robot') {
+            sh 'sh run-testsuite.sh'
+          }
+        }
+      }
+    }
+    stage('report') {
+      steps {
+        archive 'reports/**'
+
+        step([$class: 'RobotPublisher',
+          disableArchiveOutput: false,
+          logFileName: 'log.html',
+          otherFiles: '*.png',
+          outputFileName: 'output.xml',
+          outputPath: "reports",
+          passThreshold: 100,
+          reportFileName: 'report.html',
+          unstableThreshold: 90])
+      }
+    }
+  }
+
+  post {
+    failure {
+      slackSend color: 'danger', message: "${env.JOB_NAME} - #${env.BUILD_NUMBER} Failure (<${env.BUILD_URL}|Open>)"
+    }
+
+    changed {
+      script{
+        if('SUCCESS'.equals(currentBuild.currentResult)) {
+          slackSend color: 'good', message: "${env.JOB_NAME} - #${env.BUILD_NUMBER} Back to normal (<${env.BUILD_URL}|Open>)"
+        }
+      }
+    }
+  }
+}
+
